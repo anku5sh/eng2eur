@@ -8,3 +8,4 @@ __pycache__/
 .DS_Store
 translation_cache.pkl
 *.json  # API keys
+translations.db

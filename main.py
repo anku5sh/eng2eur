@@ -1,25 +1,26 @@
-# main.py - Optimized Translation with Robust Error Handling
+# main.py - Optimized Translation Engine
 import sys
 import asyncio
 import re
 import time
 import random
+import sqlite3
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
     QLabel, QLineEdit, QPushButton, QTextEdit, QProgressBar, QHBoxLayout
 )
 from PyQt6.QtCore import pyqtSignal, QObject, Qt
 from qasync import QEventLoop
-from deep_translator import GoogleTranslator, DeeplTranslator, MyMemoryTranslator, exceptions
+from deep_translator import GoogleTranslator, MyMemoryTranslator, DeeplTranslator, exceptions
 
+# Configuration
 VALID_CHARS_PATTERN = r"^[\w\s,.!?;:'\"\-àèéìòùáêíóúñçÀÈÉÌÒÙÁÊÍÓÚÑÇ]+$"
 LANGUAGES = [
     'BG', 'CS', 'DA', 'DE', 'EL', 'ES', 'ET', 'FI', 'FR', 'HU',
     'IT', 'LT', 'LV', 'NL', 'PL', 'PT', 'RO', 'SK', 'SL', 'SV'
 ]
-
-# Cache storage
-translation_cache = {}
+BATCH_SIZE = 10  # Requests per service call
+SERVICES = [GoogleTranslator, MyMemoryTranslator]  # Add DeeplTranslator with API key
 
 class Translator(QObject):
     translation_done = pyqtSignal(str, str, str, str)
@@ -28,90 +29,97 @@ class Translator(QObject):
 class TranslationApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        # ... [Keep previous UI initialization] ...
-        self.rate_limit_retries = 3  # Max retry attempts
-        self.current_service = 0  # Service rotation index
+        self.setWindowTitle("eng2eur Translator")
+        self.setGeometry(100, 100, 800, 600)
+        self.translator = Translator()
+        self.init_ui()
+        self.setFixedSize(800, 600)
+        self.service_index = 0
+        self.init_db()
+
+    def init_db(self):
+        self.conn = sqlite3.connect('translations.db')
+        c = self.conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS translations
+                     (source text, target text, phrase text, translation text)''')
+        self.conn.commit()
+
+    def init_ui(self):
+        # ... [Keep previous UI initialization code] ...
 
     async def process_translations(self, phrases):
         total = len(phrases) * len(LANGUAGES)
         completed = 0
 
         for lang in LANGUAGES:
-            for phrase in phrases:
-                cache_key = f"{phrase}-{lang}"
-                if cache_key in translation_cache:
-                    # Use cached translation
-                    translation = translation_cache[cache_key]
-                    self.translator.translation_done.emit(lang, phrase, translation, str(len(translation)))
-                    completed += 1
-                    self.progress_bar.setValue(int((completed / total) * 100))
-                    continue
-
-                # Translation workflow
+            # Batch processing
+            for i in range(0, len(phrases), BATCH_SIZE):
+                batch = phrases[i:i+BATCH_SIZE]
                 success = False
-                for attempt in range(self.rate_limit_retries):
+
+                for attempt in range(3):  # Retry loop
+                    service = SERVICES[self.service_index % len(SERVICES)]
+                    self.service_index += 1
+
                     try:
-                        translation = await self.translate_with_retry(phrase, lang)
-                        translation_cache[cache_key] = translation
+                        translated = await self.translate_batch(batch, lang, service)
+                        self.store_translations(batch, translated, lang)
                         success = True
                         break
+                    except exceptions.TooManyRequests:
+                        await asyncio.sleep((2 ** attempt) + random.uniform(0, 1))
                     except Exception as e:
-                        if attempt < self.rate_limit_retries - 1:
-                            await asyncio.sleep((2 ** attempt) + random.uniform(0, 1))
-                        else:
-                            self.translator.translation_error.emit(lang, str(e))
+                        self.translator.translation_error.emit(lang, str(e))
+                        break
 
-                if success:
-                    self.translator.translation_done.emit(lang, phrase, translation, str(len(translation)))
+                if not success:
+                    translated = ["Translation failed"] * len(batch)
 
-                completed += 1
-                self.progress_bar.setValue(int((completed / total) * 100))
+                # Emit results
+                for phrase, translation in zip(batch, translated):
+                    self.translator.translation_done.emit(
+                        lang, phrase, translation, str(len(translation))
+                    )
+                    completed += 1
+                    self.progress_bar.setValue(int((completed / total) * 100))
 
-    async def translate_with_retry(self, phrase, lang):
-        """Rotate through translation services with exponential backoff"""
-        services = [
-            self.translate_google,
-            self.translate_deepl,
-            self.translate_mymemory
-        ]
+    async def translate_batch(self, phrases, lang, translator):
+        """Batch translation with service rotation"""
+        cached = self.get_cached_translations(phrases, lang)
+        if len(cached) == len(phrases):
+            return [t[0] for t in cached]
 
-        for attempt in range(self.rate_limit_retries):
-            service = services[self.current_service]
-            try:
-                return await service(phrase, lang)
-            except exceptions.TooManyRequests:
-                self.current_service = (self.current_service + 1) % len(services)
-                await asyncio.sleep((2 ** attempt) + random.uniform(0, 1))
-            except Exception as e:
-                raise e
-
-        raise exceptions.TranslationNotFound("All services failed")
-
-    async def translate_google(self, phrase, lang):
         return await asyncio.get_event_loop().run_in_executor(
             None,
-            lambda: GoogleTranslator(
+            lambda: translator(
                 source='auto',
                 target=lang.lower()
-            ).translate(phrase)
+            ).translate_batch(phrases)
         )
 
-    async def translate_deepl(self, phrase, lang):
-        # Requires DeepL API key (free tier: 500k chars/month)
-        return await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: DeeplTranslator(
-                api_key="YOUR_DEEPL_KEY",
-                source="auto",
-                target=lang.lower()
-            ).translate(phrase)
-        )
+    def get_cached_translations(self, phrases, lang):
+        c = self.conn.cursor()
+        placeholders = ','.join(['?']*len(phrases))
+        c.execute(f'''SELECT translation FROM translations
+                    WHERE source='auto' AND target=? AND phrase IN ({placeholders})''',
+                  [lang.lower()] + phrases)
+        return c.fetchall()
 
-    async def translate_mymemory(self, phrase, lang):
-        return await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: MyMemoryTranslator(
-                source='auto',
-                target=lang.lower()
-            ).translate(phrase)
-        )
+    def store_translations(self, phrases, translations, lang):
+        c = self.conn.cursor()
+        data = [('auto', lang.lower(), p, t) for p, t in zip(phrases, translations)]
+        c.executemany('INSERT OR IGNORE INTO translations VALUES (?,?,?,?)', data)
+        self.conn.commit()
+
+    # ... [Keep other methods unchanged] ...
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    loop = QEventLoop(app)
+    asyncio.set_event_loop(loop)
+
+    window = TranslationApp()
+    window.show()
+
+    with loop:
+        sys.exit(loop.run_forever())
