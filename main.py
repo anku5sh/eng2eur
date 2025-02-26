@@ -1,5 +1,7 @@
+# main.py - Final Version with Rate Limiting & UI Fixes
 import sys
 import asyncio
+import time
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
     QLabel, QLineEdit, QPushButton, QTextEdit, QProgressBar, QHBoxLayout
@@ -21,10 +23,11 @@ class TranslationApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("eng2eur Translator")
-        self.setGeometry(100, 100, 900, 700)
+        self.setGeometry(100, 100, 800, 600)  # Reduced window width
         self.translator = Translator()
         self.init_ui()
-        self.setFixedSize(900, 700)
+        self.setFixedSize(800, 600)
+        self.last_request_time = 0  # Rate limiting control
 
     def init_ui(self):
         central_widget = QWidget()
@@ -52,9 +55,10 @@ class TranslationApp(QMainWindow):
         self.output_area = QTextEdit()
         self.output_area.setReadOnly(True)
         self.output_area.setFontFamily("Courier New")
-        self.output_area.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
-        self.output_area.append(f"{'Lang':<5}{'Translation':<90}{'Chars':>6}")
-        self.output_area.append("-" * 120)
+        self.output_area.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)  # Enable word wrap
+        self.output_area.setMaximumWidth(780)  # Prevent horizontal scroll
+        self.output_area.append(f"{'Lang':<5}{'Translation':<65}{'Chars':>6}")
+        self.output_area.append("-" * 90)
 
         # Assemble layout
         main_layout.addWidget(self.input_label)
@@ -83,8 +87,8 @@ class TranslationApp(QMainWindow):
 
         self.input_field.clear()
         self.output_area.clear()
-        self.output_area.append(f"{'Lang':<5}{'Translation':<90}{'Chars':>6}")
-        self.output_area.append("-" * 120)
+        self.output_area.append(f"{'Lang':<5}{'Translation':<65}{'Chars':>6}")
+        self.output_area.append("-" * 90)
         self.progress_bar.setValue(0)
 
         phrases = [p.strip() for p in text.split(';') if p.strip()]
@@ -97,10 +101,15 @@ class TranslationApp(QMainWindow):
         for phrase in phrases:
             tasks = []
             for lang in LANGUAGES:
+                # Rate limiting: 0.25s between requests (4 requests/second)
+                while time.time() - self.last_request_time < 0.25:
+                    await asyncio.sleep(0.1)
+
                 task = asyncio.create_task(
                     self.translate_phrase(phrase, lang)
                 )
                 tasks.append(task)
+                self.last_request_time = time.time()
 
             for task in tasks:
                 await task
@@ -125,7 +134,7 @@ class TranslationApp(QMainWindow):
             self.translator.translation_error.emit(lang, f"Error: {str(e)}")
 
     def update_output(self, lang, original, translation, char_count):
-        line = f"{lang:<5}{translation:<90}{char_count:>6}"
+        line = f"{lang:<5}{translation[:65]:<65}{char_count:>6}"  # Truncate long translations
         self.output_area.append(line)
 
     def show_error(self, context, message):
