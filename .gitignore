@@ -2,6 +2,7 @@ venv/
 dist/
 build/
 *.spec
+*.dmg
 *.pyc
 __pycache__/
 .DS_Store

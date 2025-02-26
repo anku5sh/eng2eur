@@ -1,6 +1,7 @@
-# main.py - Batch Translation Version
+# main.py - Final Version with Fallback & Validation
 import sys
 import asyncio
+import re
 import time
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
@@ -8,8 +9,10 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import pyqtSignal, QObject, Qt
 from qasync import QEventLoop
-from deep_translator import GoogleTranslator, exceptions
+from deep_translator import GoogleTranslator, MyMemoryTranslator, exceptions
 
+# Allowed characters: letters, numbers, basic punctuation, and accents
+VALID_CHARS_PATTERN = r"^[\w\s,.!?;:'\"\-àèéìòùáêíóúñçÀÈÉÌÒÙÁÊÍÓÚÑÇ]+$"
 LANGUAGES = [
     'BG', 'CS', 'DA', 'DE', 'EL', 'ES', 'ET', 'FI', 'FR', 'HU',
     'IT', 'LT', 'LV', 'NL', 'PL', 'PT', 'RO', 'SK', 'SL', 'SV'
@@ -76,12 +79,19 @@ class TranslationApp(QMainWindow):
 
     def start_translation(self):
         text = self.input_field.text().strip()
+
+        # Input Validation
         if not text:
             self.show_error("Input", "Please enter text to translate")
             return
 
         if len(text) > 300:
             self.show_error("Input", "Maximum 300 characters allowed")
+            return
+
+        if not re.match(VALID_CHARS_PATTERN, text):
+            invalid_chars = set(re.findall(r"[^\w\s,.!?;:'\"\-àèéìòùáêíóúñçÀÈÉÌÒÙÁÊÍÓÚÑÇ]", text))
+            self.show_error("Input", f"Invalid characters: {', '.join(invalid_chars)}")
             return
 
         self.input_field.clear()
@@ -103,25 +113,27 @@ class TranslationApp(QMainWindow):
                 await asyncio.sleep(0.1)
 
             try:
-                translated_batch = await self.translate_batch(phrases, lang)
-                for phrase, translation in zip(phrases, translated_batch):
-                    char_count = str(len(translation))
-                    self.translator.translation_done.emit(lang, phrase, translation, char_count)
-                    completed += 1
-                    self.progress_bar.setValue(int((completed / total) * 100))
+                # First try Google Translate
+                translated_batch = await self.translate_batch(phrases, lang, GoogleTranslator)
+            except Exception as google_error:
+                try:
+                    # Fallback to MyMemory
+                    translated_batch = await self.translate_batch(phrases, lang, MyMemoryTranslator)
+                except Exception as memory_error:
+                    translated_batch = [f"Translation failed: {str(memory_error)}"] * len(phrases)
 
-            except Exception as e:
-                for phrase in phrases:
-                    self.translator.translation_error.emit(lang, f"Error: {str(e)}")
-                    completed += 1
-                    self.progress_bar.setValue(int((completed / total) * 100))
+            for phrase, translation in zip(phrases, translated_batch):
+                char_count = str(len(translation))
+                self.translator.translation_done.emit(lang, phrase, translation, char_count)
+                completed += 1
+                self.progress_bar.setValue(int((completed / total) * 100))
 
             self.last_request_time = time.time()
 
-    async def translate_batch(self, phrases, lang):
+    async def translate_batch(self, phrases, lang, translator_class):
         return await asyncio.get_event_loop().run_in_executor(
             None,
-            lambda: GoogleTranslator(
+            lambda: translator_class(
                 source='auto',
                 target=lang.lower()
             ).translate_batch(phrases)
