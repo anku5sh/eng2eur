@@ -1,4 +1,4 @@
-# main.py - Final Version with Rate Limiting & UI Fixes
+# main.py - Batch Translation Version
 import sys
 import asyncio
 import time
@@ -23,11 +23,11 @@ class TranslationApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("eng2eur Translator")
-        self.setGeometry(100, 100, 800, 600)  # Reduced window width
+        self.setGeometry(100, 100, 800, 600)
         self.translator = Translator()
         self.init_ui()
         self.setFixedSize(800, 600)
-        self.last_request_time = 0  # Rate limiting control
+        self.last_request_time = 0
 
     def init_ui(self):
         central_widget = QWidget()
@@ -55,8 +55,7 @@ class TranslationApp(QMainWindow):
         self.output_area = QTextEdit()
         self.output_area.setReadOnly(True)
         self.output_area.setFontFamily("Courier New")
-        self.output_area.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)  # Enable word wrap
-        self.output_area.setMaximumWidth(780)  # Prevent horizontal scroll
+        self.output_area.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         self.output_area.append(f"{'Lang':<5}{'Translation':<65}{'Chars':>6}")
         self.output_area.append("-" * 90)
 
@@ -98,43 +97,38 @@ class TranslationApp(QMainWindow):
         total = len(phrases) * len(LANGUAGES)
         completed = 0
 
-        for phrase in phrases:
-            tasks = []
-            for lang in LANGUAGES:
-                # Rate limiting: 0.25s between requests (4 requests/second)
-                while time.time() - self.last_request_time < 0.25:
-                    await asyncio.sleep(0.1)
+        for lang in LANGUAGES:
+            # Rate limit: 1 request per second per language
+            while time.time() - self.last_request_time < 1:
+                await asyncio.sleep(0.1)
 
-                task = asyncio.create_task(
-                    self.translate_phrase(phrase, lang)
-                )
-                tasks.append(task)
-                self.last_request_time = time.time()
+            try:
+                translated_batch = await self.translate_batch(phrases, lang)
+                for phrase, translation in zip(phrases, translated_batch):
+                    char_count = str(len(translation))
+                    self.translator.translation_done.emit(lang, phrase, translation, char_count)
+                    completed += 1
+                    self.progress_bar.setValue(int((completed / total) * 100))
 
-            for task in tasks:
-                await task
-                completed += 1
-                self.progress_bar.setValue(int((completed / total) * 100))
+            except Exception as e:
+                for phrase in phrases:
+                    self.translator.translation_error.emit(lang, f"Error: {str(e)}")
+                    completed += 1
+                    self.progress_bar.setValue(int((completed / total) * 100))
 
-    async def translate_phrase(self, phrase, lang):
-        try:
-            translated = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: GoogleTranslator(
-                    source='auto',
-                    target=lang.lower()
-                ).translate(phrase[:300])
-            )
-            char_count = str(len(translated))
-            self.translator.translation_done.emit(lang, phrase, translated, char_count)
-            return (lang, f"{translated} ({len(translated)} chars)")
-        except exceptions.TranslationNotFound as e:
-            self.translator.translation_error.emit(lang, f"Translation unavailable: {str(e)}")
-        except Exception as e:
-            self.translator.translation_error.emit(lang, f"Error: {str(e)}")
+            self.last_request_time = time.time()
+
+    async def translate_batch(self, phrases, lang):
+        return await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: GoogleTranslator(
+                source='auto',
+                target=lang.lower()
+            ).translate_batch(phrases)
+        )
 
     def update_output(self, lang, original, translation, char_count):
-        line = f"{lang:<5}{translation[:65]:<65}{char_count:>6}"  # Truncate long translations
+        line = f"{lang:<5}{translation[:65]:<65}{char_count:>6}"
         self.output_area.append(line)
 
     def show_error(self, context, message):
