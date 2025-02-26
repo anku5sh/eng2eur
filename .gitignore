@@ -6,3 +6,5 @@ build/
 *.pyc
 __pycache__/
 .DS_Store
+translation_cache.pkl
+*.json  # API keys
