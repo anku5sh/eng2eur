@@ -1,11 +1,10 @@
 venv/
 dist/
 build/
-*.spec
 *.dmg
-*.pyc
+*.spec
 __pycache__/
+*.pyc
 .DS_Store
-translation_cache.pkl
-*.json  # API keys
 translations.db
+eng2eur_debug.log
