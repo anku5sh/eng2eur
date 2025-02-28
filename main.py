@@ -1,4 +1,4 @@
-# main.py - Final Functional Version
+# main.py - Fixed Translation with Special Characters
 import sys
 import asyncio
 import re
@@ -11,20 +11,19 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import pyqtSignal, QObject, Qt
 from qasync import QEventLoop
-from deep_translator import GoogleTranslator, MyMemoryTranslator, DeeplTranslator, exceptions
+from deep_translator import GoogleTranslator, MyMemoryTranslator, exceptions
 
-# Configuration
-VALID_CHARS_PATTERN = r"^[\w\s,.!?;:'\"\-àèéìòùáêíóúñçÀÈÉÌÒÙÁÊÍÓÚÑÇ]+$"
+# Allow any printable characters except control characters
+VALID_CHARS_PATTERN = r'^[^\x00-\x1F\x7F]*$'
 LANGUAGES = [
     'BG', 'CS', 'DA', 'DE', 'EL', 'ES', 'ET', 'FI', 'FR', 'HU',
     'IT', 'LT', 'LV', 'NL', 'PL', 'PT', 'RO', 'SK', 'SL', 'SV'
 ]
 BATCH_SIZE = 5
-MAX_RETRIES = 3
 
 class Translator(QObject):
     translation_done = pyqtSignal(str, str, str, str)  # (lang, original, translation, chars)
-    translation_error = pyqtSignal(str, str)  # (lang, error)
+    translation_error = pyqtSignal(str, str)
 
 class TranslationApp(QMainWindow):
     def __init__(self):
@@ -35,7 +34,6 @@ class TranslationApp(QMainWindow):
         self.init_db()
         self.init_ui()
         self.setFixedSize(800, 600)
-        self.service_index = 0
 
     def init_db(self):
         self.conn = sqlite3.connect('translations.db')
@@ -49,39 +47,30 @@ class TranslationApp(QMainWindow):
         central_widget = QWidget()
         main_layout = QVBoxLayout()
 
-        # Input Section
-        self.input_label = QLabel("Enter phrases (semicolon-separated - max 300 chars):")
-
-        # Input row
+        self.input_label = QLabel("Enter text with any special characters:")
         input_row = QHBoxLayout()
         self.input_field = QLineEdit()
-        self.input_field.setMaxLength(300)
-        self.input_field.setPlaceholderText("Example: Hello; Goodbye")
-
+        self.input_field.setMaxLength(500)
         self.translate_btn = QPushButton("Translate")
         self.translate_btn.setFixedWidth(120)
 
         input_row.addWidget(self.input_field)
         input_row.addWidget(self.translate_btn, alignment=Qt.AlignmentFlag.AlignRight)
 
-        # Progress and Output
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
 
         self.output_area = QTextEdit()
         self.output_area.setReadOnly(True)
         self.output_area.setFontFamily("Courier New")
-        self.output_area.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         self.output_area.append(f"{'Lang':<5}{'Translation':<60}{'Chars':>6}")
         self.output_area.append("-" * 80)
 
-        # Assemble layout
         main_layout.addWidget(self.input_label)
         main_layout.addLayout(input_row)
         main_layout.addWidget(self.progress_bar)
         main_layout.addWidget(self.output_area)
 
-        # Connections
         self.translate_btn.clicked.connect(self.start_translation)
         self.input_field.returnPressed.connect(self.start_translation)
         self.translator.translation_done.connect(self.update_output)
@@ -92,19 +81,12 @@ class TranslationApp(QMainWindow):
 
     def start_translation(self):
         text = self.input_field.text().strip()
-
-        # Validation
         if not text:
             self.show_error("Input", "Please enter text to translate")
             return
 
-        if len(text) > 300:
-            self.show_error("Input", "Maximum 300 characters allowed")
-            return
-
         if not re.match(VALID_CHARS_PATTERN, text):
-            invalid = set(re.findall(r"[^\w\s,.!?;:'\"\-àèéìòùáêíóúñçÀÈÉÌÒÙÁÊÍÓÚÑÇ]", text))
-            self.show_error("Input", f"Invalid characters: {', '.join(invalid)}")
+            self.show_error("Input", "Invalid control characters detected")
             return
 
         self.input_field.clear()
@@ -121,56 +103,37 @@ class TranslationApp(QMainWindow):
         completed = 0
 
         for lang in LANGUAGES:
+            target_lang = lang.lower()
             for i in range(0, len(phrases), BATCH_SIZE):
                 batch = phrases[i:i+BATCH_SIZE]
-                success = False
+                try:
+                    translated = await self.translate_batch(batch, target_lang)
+                    self.store_translations(batch, translated, target_lang)
+                except Exception as e:
+                    translated = [str(e)] * len(batch)
 
-                for attempt in range(MAX_RETRIES):
-                    try:
-                        translated = await self.translate_batch(batch, lang)
-                        self.store_translations(batch, translated, lang)
-                        success = True
-                        break
-                    except exceptions.TooManyRequests:
-                        delay = (2 ** attempt) + random.uniform(0, 1)
-                        await asyncio.sleep(delay)
-                    except Exception as e:
-                        self.show_error(lang, str(e))
-                        break
-
-                if not success:
-                    translated = ["Translation failed"] * len(batch)
-
-                # Update progress
                 for phrase, translation in zip(batch, translated):
                     self.translator.translation_done.emit(lang, phrase, translation, str(len(translation)))
                     completed += 1
                     self.progress_bar.setValue(int((completed / total) * 100))
+                await asyncio.sleep(0.5)  # Rate limiting
 
-    async def translate_batch(self, phrases, lang):
-        """Translate with service rotation and fallback"""
-        services = [
-            GoogleTranslator,
-            lambda: MyMemoryTranslator(source='auto', target=lang.lower()),
-            # DeeplTranslator(api_key="YOUR_KEY", source="auto", target=lang.lower())  # Uncomment with API key
-        ]
+    async def translate_batch(self, phrases, target_lang):
+        """Improved translation with proper service initialization"""
+        try:
+            return await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: GoogleTranslator(source='auto', target=target_lang).translate_batch(phrases)
+            )
+        except exceptions.TooManyRequests:
+            return await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: MyMemoryTranslator(source='auto', target=target_lang).translate_batch(phrases)
+            )
 
-        for service_idx, service in enumerate(services):
-            try:
-                return await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: service().translate_batch(phrases)
-                )
-            except Exception as e:
-                if service_idx == len(services) - 1:
-                    raise e
-                await asyncio.sleep(1)
-
-        raise exceptions.TranslationNotFound("All services failed")
-
-    def store_translations(self, phrases, translations, lang):
+    def store_translations(self, phrases, translations, target_lang):
         c = self.conn.cursor()
-        data = [('auto', lang.lower(), p, t) for p, t in zip(phrases, translations)]
+        data = [('auto', target_lang, p, t) for p, t in zip(phrases, translations)]
         c.executemany('INSERT OR IGNORE INTO translations VALUES (?,?,?,?)', data)
         self.conn.commit()
 
