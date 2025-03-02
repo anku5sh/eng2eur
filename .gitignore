@@ -1,10 +1,14 @@
-venv/
-dist/
-build/
-*.dmg
+# Folders
+/venv/
+/dist/
+/build/
+
+# Files
 *.spec
-__pycache__/
 *.pyc
+*.log
 .DS_Store
-translations.db
-eng2eur_debug.log
+
+# Keep these
+!translations.db
+!background.png

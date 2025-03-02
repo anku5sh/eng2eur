@@ -1,4 +1,4 @@
-# main.py - Version 2.0 with Original Phrase Display
+# main.py - Final M2-Compatible Version
 import sys
 import os
 import asyncio
@@ -29,9 +29,11 @@ LANGUAGES = [
     'IT', 'LT', 'LV', 'NL', 'PL', 'PT', 'RO', 'SK', 'SL', 'SV'
 ]
 BATCH_SIZE = 3
+WINDOW_WIDTH = 800
+WINDOW_HEIGHT = 600
 
 def get_resource_path(relative_path):
-    """Get absolute path to resource for dev and PyInstaller"""
+    """Get absolute path to resource"""
     if getattr(sys, 'frozen', False):
         base_path = sys._MEIPASS
     else:
@@ -39,19 +41,19 @@ def get_resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 class Translator(QObject):
-    original_ready = pyqtSignal(str, int)  # (phrase, char_count)
-    translation_done = pyqtSignal(str, str, str, int)  # (lang, original, translation, char_count)
+    original_ready = pyqtSignal(str, int)
+    translation_done = pyqtSignal(str, str, str, int)
     translation_error = pyqtSignal(str, str)
 
 class TranslationApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("eng2eur Translator")
-        self.setGeometry(100, 100, 800, 600)
+        self.setGeometry(100, 100, WINDOW_WIDTH, WINDOW_HEIGHT)
         self.translator = Translator()
         self.init_db()
         self.init_ui()
-        self.setFixedSize(800, 600)
+        self.setFixedSize(WINDOW_WIDTH, WINDOW_HEIGHT)
         logging.info("Application initialized")
 
     def init_db(self):
@@ -59,9 +61,11 @@ class TranslationApp(QMainWindow):
             db_path = get_resource_path("translations.db")
             self.conn = sqlite3.connect(db_path)
             c = self.conn.cursor()
-            c.execute('''CREATE TABLE IF NOT EXISTS translations
-                        (source TEXT, target TEXT, phrase TEXT, translation TEXT,
-                        UNIQUE(source, target, phrase))''')
+            c.execute('''
+                CREATE TABLE IF NOT EXISTS translations
+                (source TEXT, target TEXT, phrase TEXT, translation TEXT,
+                UNIQUE(source, target, phrase))
+            ''')
             self.conn.commit()
             logging.info("Database initialized")
         except Exception as e:
@@ -72,8 +76,10 @@ class TranslationApp(QMainWindow):
         central_widget = QWidget()
         main_layout = QVBoxLayout()
 
+        # Input Section
         self.input_label = QLabel("Enter phrases (semicolon-separated):")
 
+        # Input row
         input_row = QHBoxLayout()
         self.input_field = QLineEdit()
         self.input_field.setMaxLength(500)
@@ -85,14 +91,15 @@ class TranslationApp(QMainWindow):
         input_row.addWidget(self.input_field)
         input_row.addWidget(self.translate_btn, alignment=Qt.AlignmentFlag.AlignRight)
 
+        # Progress bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
 
+        # Output area
         self.output_area = QTextEdit()
         self.output_area.setReadOnly(True)
         self.output_area.setFontFamily("Courier New")
-        self.output_area.append(f"{'Original':<20}{'Language':<8}{'Translation':<50}{'Chars':>6}")
-        self.output_area.append("-" * 90)
+        self.output_area.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
 
         main_layout.addWidget(self.input_label)
         main_layout.addLayout(input_row)
@@ -120,8 +127,6 @@ class TranslationApp(QMainWindow):
 
         self.input_field.clear()
         self.output_area.clear()
-        self.output_area.append(f"{'Original':<20}{'Language':<8}{'Translation':<50}{'Chars':>6}")
-        self.output_area.append("-" * 90)
         self.progress_bar.setValue(0)
 
         phrases = [p.strip() for p in text.split(';') if p.strip()]
@@ -132,24 +137,22 @@ class TranslationApp(QMainWindow):
         completed = 0
 
         for phrase in phrases:
-            # Show original phrase first
             self.translator.original_ready.emit(phrase, len(phrase))
 
-            # Process translations for each language
             for lang in LANGUAGES:
+                target_lang = lang.lower()
                 try:
-                    translated = await self.translate_phrase(phrase, lang.lower())
-                    self.store_translation(phrase, translated, lang.lower())
+                    translated = await self.translate_phrase(phrase, target_lang)
+                    self.store_translation(phrase, translated, target_lang)
                     self.translator.translation_done.emit(lang, phrase, translated, len(translated))
                 except Exception as e:
                     self.translator.translation_error.emit(lang, str(e))
 
                 completed += 1
                 self.progress_bar.setValue(int((completed / total) * 100))
-                await asyncio.sleep(0.3)  # Rate limiting
+                await asyncio.sleep(0.3)
 
     async def translate_phrase(self, phrase, lang):
-        """Translate with service rotation and retry logic"""
         services = [GoogleTranslator, MyMemoryTranslator]
         for attempt in range(3):
             try:
@@ -159,7 +162,8 @@ class TranslationApp(QMainWindow):
                     lambda: service(source='auto', target=lang).translate(phrase)
                 )
             except exceptions.TooManyRequests:
-                await asyncio.sleep((2 ** attempt) + random.uniform(0, 1))
+                delay = (2 ** attempt) + random.uniform(0, 1)
+                await asyncio.sleep(delay)
             except Exception as e:
                 if attempt == 2:
                     raise e
@@ -167,29 +171,28 @@ class TranslationApp(QMainWindow):
 
     def store_translation(self, phrase, translation, lang):
         c = self.conn.cursor()
-        c.execute('INSERT OR IGNORE INTO translations VALUES (?,?,?,?)',
-                  ('auto', lang, phrase, translation))
+        c.execute('''
+            INSERT OR IGNORE INTO translations
+            VALUES (?, ?, ?, ?)
+        ''', ('auto', lang, phrase, translation))
         self.conn.commit()
 
     def show_original(self, phrase, char_count):
-        self.output_area.append(f"{phrase:<20}{'Original':<8}{'':<50}{char_count:>6}")
+        self.output_area.append(f"Original: {phrase} ({char_count} characters)\n{'='*80}")
 
     def update_output(self, lang, original, translation, char_count):
-        line = f"{'':<20}{lang:<8}{translation[:50]:<50}{char_count:>6}"
-        self.output_area.append(line)
+        self.output_area.append(f"{lang}: {translation} ({char_count} chars)")
 
     def show_error(self, context, message):
-        self.output_area.append(f"\n{'ERROR':<20}{context:<8}{message[:50]:<50}{'':>6}")
+        self.output_area.append(f"\n[ERROR] {context}: {message}\n")
 
 if __name__ == "__main__":
     try:
         app = QApplication(sys.argv)
         loop = QEventLoop(app)
         asyncio.set_event_loop(loop)
-
         window = TranslationApp()
         window.show()
-
         with loop:
             sys.exit(loop.run_forever())
     except Exception as e:
