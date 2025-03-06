@@ -1,4 +1,3 @@
-# main.py - Final Highlighting Fix
 import sys
 import os
 import asyncio
@@ -26,7 +25,7 @@ LANGUAGES = [
     'BG', 'CS', 'DA', 'DE', 'EL', 'ES', 'ET', 'FI', 'FR', 'HU',
     'IT', 'LT', 'LV', 'NL', 'PL', 'PT', 'RO', 'SK', 'SL', 'SV'
 ]
-BASE_DELAY = 0.2
+BASE_DELAY = 0.05
 MAX_LINE_LENGTH = 65
 WINDOW_WIDTH = 800
 WINDOW_HEIGHT = 600
@@ -50,8 +49,8 @@ class TranslationApp(QMainWindow):
         self.setGeometry(100, 100, WINDOW_WIDTH, WINDOW_HEIGHT)
         self.translator = Translator()
         self._rate_limit_multiplier = 1
+        self.translations_buffer = []
         self.global_max_chars = 0
-        self.lang_max_chars = {}
         self.init_db()
         self.init_ui()
         self.setFixedSize(WINDOW_WIDTH, WINDOW_HEIGHT)
@@ -154,8 +153,8 @@ class TranslationApp(QMainWindow):
         self.output_area.append(f"{'Lang':<5}{'Translation':<65}{'Chars':>6}")
         self.output_area.append("-" * 90)
         self.progress_bar.setValue(0)
+        self.translations_buffer = []
         self.global_max_chars = 0
-        self.lang_max_chars = {}
 
         phrases = [p.strip() for p in text.split(';') if p.strip()]
         asyncio.create_task(self.process_translations(phrases))
@@ -180,9 +179,8 @@ class TranslationApp(QMainWindow):
                         is_cached = False
 
                     char_count = len(translation)
+                    self.translations_buffer.append( (lang, translation, char_count) )
                     self.global_max_chars = max(self.global_max_chars, char_count)
-                    self.lang_max_chars[lang] = max(self.lang_max_chars.get(lang, 0), char_count)
-                    self.translator.translation_done.emit(lang, phrase, translation, char_count)
 
                     if not is_cached:
                         self._rate_limit_multiplier = max(1, self._rate_limit_multiplier // 2)
@@ -197,6 +195,10 @@ class TranslationApp(QMainWindow):
                 completed += 1
                 self.progress_bar.setValue(int((completed / total) * 100))
                 await asyncio.sleep(BASE_DELAY * self._rate_limit_multiplier)
+
+        # Emit all translations after processing
+        for lang, translation, char_count in self.translations_buffer:
+            self.translator.translation_done.emit(lang, "", translation, char_count)
 
     async def translate_phrase(self, phrase, lang):
         services = [GoogleTranslator, MyMemoryTranslator]
@@ -224,17 +226,12 @@ class TranslationApp(QMainWindow):
             for i in range(0, len(translation), MAX_LINE_LENGTH)
         ]
 
-        highlight_global = char_count == self.global_max_chars
-        highlight_lang = char_count == self.lang_max_chars.get(lang, 0)
-
         for idx, line in enumerate(translation_lines):
             lang_col = lang if idx == 0 else ""
             char_col = str(char_count) if idx == 0 else ""
 
-            if highlight_global and idx == 0:
+            if char_count == self.global_max_chars and idx == 0:
                 char_col = f"[{char_col}]"
-            elif highlight_lang and idx == 0:
-                char_col = f" {char_col} "
 
             formatted_line = f"{lang_col:<5}{line:<65}{char_col:>6}"
             self.output_area.append(formatted_line)
