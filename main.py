@@ -1,8 +1,8 @@
-# main.py - Final Optimized & Verified Version
 import sys
 import os
 import asyncio
 import re
+import time
 import random
 import sqlite3
 import logging
@@ -25,8 +25,8 @@ LANGUAGES = [
     'BG', 'CS', 'DA', 'DE', 'EL', 'ES', 'ET', 'FI', 'FR', 'HU',
     'IT', 'LT', 'LV', 'NL', 'PL', 'PT', 'RO', 'SK', 'SL', 'SV'
 ]
-BASE_DELAY = 0.02
-CONCURRENT_TASKS = 10
+BASE_DELAY = 0.05
+MAX_LINE_LENGTH = 65
 WINDOW_WIDTH = 800
 WINDOW_HEIGHT = 600
 
@@ -48,17 +48,13 @@ class TranslationApp(QMainWindow):
         self.setWindowTitle("eng2eur Translator")
         self.setGeometry(100, 100, WINDOW_WIDTH, WINDOW_HEIGHT)
         self.translator = Translator()
+        self._rate_limit_multiplier = 1
+        self.translations_buffer = []
         self.global_max_chars = 0
         self.init_db()
         self.init_ui()
         self.setFixedSize(WINDOW_WIDTH, WINDOW_HEIGHT)
 
-        # Loading indicator
-        self.loading_label = QLabel("Loading translations...")
-        self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.loading_label.setHidden(True)
-
-        # Signal connections
         self.translator.original_ready.connect(
             self.show_original,
             Qt.ConnectionType.QueuedConnection
@@ -108,37 +104,32 @@ class TranslationApp(QMainWindow):
         central_widget = QWidget()
         main_layout = QVBoxLayout()
 
-        # Loading indicator
-        main_layout.addWidget(self.loading_label)
-
-        # Input Section
         self.input_label = QLabel("Enter phrases (semicolon-separated):")
-        main_layout.addWidget(self.input_label)
 
-        # Input row
         input_row = QHBoxLayout()
         self.input_field = QLineEdit()
         self.input_field.setMaxLength(500)
         self.input_field.setPlaceholderText("Example: Hello; Goodbye")
+
         self.translate_btn = QPushButton("Translate")
         self.translate_btn.setFixedWidth(120)
 
         input_row.addWidget(self.input_field)
         input_row.addWidget(self.translate_btn, alignment=Qt.AlignmentFlag.AlignRight)
-        main_layout.addLayout(input_row)
 
-        # Progress bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
-        main_layout.addWidget(self.progress_bar)
 
-        # Output area
         self.output_area = QTextEdit()
         self.output_area.setReadOnly(True)
         self.output_area.setFontFamily("Courier New")
         self.output_area.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         self.output_area.append(f"{'Lang':<5}{'Translation':<65}{'Chars':>6}")
         self.output_area.append("-" * 90)
+
+        main_layout.addWidget(self.input_label)
+        main_layout.addLayout(input_row)
+        main_layout.addWidget(self.progress_bar)
         main_layout.addWidget(self.output_area)
 
         self.translate_btn.clicked.connect(self.start_translation)
@@ -159,11 +150,10 @@ class TranslationApp(QMainWindow):
 
         self.input_field.clear()
         self.output_area.clear()
-        self.loading_label.setHidden(False)
-        self.translate_btn.setEnabled(False)
         self.output_area.append(f"{'Lang':<5}{'Translation':<65}{'Chars':>6}")
         self.output_area.append("-" * 90)
         self.progress_bar.setValue(0)
+        self.translations_buffer = []
         self.global_max_chars = 0
 
         phrases = [p.strip() for p in text.split(';') if p.strip()]
@@ -172,35 +162,43 @@ class TranslationApp(QMainWindow):
     async def process_translations(self, phrases):
         total = len(phrases) * len(LANGUAGES)
         completed = 0
-        semaphore = asyncio.Semaphore(CONCURRENT_TASKS)
 
-        async def process_phrase(phrase):
-            nonlocal completed
-            async with semaphore:
-                for lang in LANGUAGES:
-                    target_lang = lang.lower()
-                    try:
-                        cached = self.get_cached_translation(phrase, target_lang)
-                        if cached:
-                            translation = cached
-                        else:
-                            translation = await self.translate_phrase(phrase, target_lang)
-                            self.store_translation(phrase, translation, target_lang)
+        for phrase in phrases:
+            self.translator.original_ready.emit(phrase, len(phrase))
 
-                        char_count = len(translation)
-                        self.global_max_chars = max(self.global_max_chars, char_count)
-                        self.translator.translation_done.emit(lang, phrase, translation, char_count)
-                        completed += 1
-                        self.progress_bar.setValue(int((completed / total) * 100))
+            for lang in LANGUAGES:
+                target_lang = lang.lower()
+                try:
+                    cached_translation = self.get_cached_translation(phrase, target_lang)
+                    if cached_translation:
+                        translation = cached_translation
+                        is_cached = True
+                    else:
+                        translation = await self.translate_phrase(phrase, target_lang)
+                        self.store_translation(phrase, translation, target_lang)
+                        is_cached = False
 
-                    except Exception as e:
-                        self.translator.translation_error.emit(lang, str(e))
+                    char_count = len(translation)
+                    self.translations_buffer.append( (lang, translation, char_count) )
+                    self.global_max_chars = max(self.global_max_chars, char_count)
 
-                    await asyncio.sleep(BASE_DELAY)
+                    if not is_cached:
+                        self._rate_limit_multiplier = max(1, self._rate_limit_multiplier // 2)
 
-        await asyncio.gather(*[process_phrase(phrase) for phrase in phrases])
-        self.loading_label.setHidden(True)
-        self.translate_btn.setEnabled(True)
+                except exceptions.TooManyRequests:
+                    self._rate_limit_multiplier *= 2
+                    delay = BASE_DELAY * self._rate_limit_multiplier
+                    await asyncio.sleep(delay)
+                except Exception as e:
+                    self.translator.translation_error.emit(lang, str(e))
+
+                completed += 1
+                self.progress_bar.setValue(int((completed / total) * 100))
+                await asyncio.sleep(BASE_DELAY * self._rate_limit_multiplier)
+
+        # Emit all translations after processing
+        for lang, translation, char_count in self.translations_buffer:
+            self.translator.translation_done.emit(lang, "", translation, char_count)
 
     async def translate_phrase(self, phrase, lang):
         services = [GoogleTranslator, MyMemoryTranslator]
@@ -224,8 +222,8 @@ class TranslationApp(QMainWindow):
 
     def update_output(self, lang, original, translation, char_count):
         translation_lines = [
-            translation[i:i+65]
-            for i in range(0, len(translation), 65)
+            translation[i:i+MAX_LINE_LENGTH]
+            for i in range(0, len(translation), MAX_LINE_LENGTH)
         ]
 
         for idx, line in enumerate(translation_lines):
