@@ -250,4 +250,4 @@ if __name__ == "__main__":
             sys.exit(loop.run_forever())
     except Exception as e:
         logging.critical(f"Fatal error: {str(e)}", exc_info=True)
-        sys.exit(1) #yay
+        sys.exit(1)
