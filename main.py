@@ -29,6 +29,7 @@ BASE_DELAY = 0.05
 MAX_LINE_LENGTH = 65
 WINDOW_WIDTH = 800
 WINDOW_HEIGHT = 600
+MAX_CONCURRENT = 5  # Maximum concurrent translations
 
 def get_resource_path(relative_path):
     if getattr(sys, 'frozen', False):
@@ -41,6 +42,7 @@ class Translator(QObject):
     original_ready = pyqtSignal(str, int)
     translation_done = pyqtSignal(str, str, str, int)
     translation_error = pyqtSignal(str, str)
+    loading_status = pyqtSignal(bool, str)  # For loading indicator
 
 class TranslationApp(QMainWindow):
     def __init__(self):
@@ -67,6 +69,10 @@ class TranslationApp(QMainWindow):
             self.show_error,
             Qt.ConnectionType.QueuedConnection
         )
+        self.translator.loading_status.connect(
+            self.update_loading_status,
+            Qt.ConnectionType.QueuedConnection
+        )
 
     def init_db(self):
         try:
@@ -83,14 +89,20 @@ class TranslationApp(QMainWindow):
             logging.error(f"Database error: {str(e)}")
             raise
 
-    def get_cached_translation(self, phrase, lang):
+    def get_cached_translations(self, phrases, langs):
+        results = {}
         c = self.conn.cursor()
-        c.execute('''
-            SELECT translation FROM translations
-            WHERE source='auto' AND target=? AND phrase=?
-        ''', (lang, phrase))
-        result = c.fetchone()
-        return result[0] if result else None
+        for phrase in phrases:
+            for lang in langs:
+                c.execute('''
+                    SELECT translation FROM translations
+                    WHERE source='auto' AND target=? AND phrase=?
+                ''', (lang.lower(), phrase))
+                result = c.fetchone()
+                if result:
+                    key = (phrase, lang.lower())
+                    results[key] = result[0]
+        return results
 
     def store_translation(self, phrase, translation, lang):
         c = self.conn.cursor()
@@ -120,6 +132,12 @@ class TranslationApp(QMainWindow):
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
 
+        # Loading indicator
+        self.loading_label = QLabel("Loading, please wait...")
+        self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.loading_label.setStyleSheet("font-weight: bold; color: blue;")
+        self.loading_label.setVisible(False)
+
         self.output_area = QTextEdit()
         self.output_area.setReadOnly(True)
         self.output_area.setFontFamily("Courier New")
@@ -130,6 +148,7 @@ class TranslationApp(QMainWindow):
         main_layout.addWidget(self.input_label)
         main_layout.addLayout(input_row)
         main_layout.addWidget(self.progress_bar)
+        main_layout.addWidget(self.loading_label)
         main_layout.addWidget(self.output_area)
 
         self.translate_btn.clicked.connect(self.start_translation)
@@ -137,6 +156,12 @@ class TranslationApp(QMainWindow):
 
         central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
+
+    def update_loading_status(self, is_loading, message="Loading, please wait..."):
+        self.loading_label.setText(message)
+        self.loading_label.setVisible(is_loading)
+        self.translate_btn.setEnabled(not is_loading)
+        self.input_field.setEnabled(not is_loading)
 
     def start_translation(self):
         text = self.input_field.text().strip()
@@ -160,45 +185,65 @@ class TranslationApp(QMainWindow):
         asyncio.create_task(self.process_translations(phrases))
 
     async def process_translations(self, phrases):
+        self.translator.loading_status.emit(True, "Loading, please wait...")
+
         total = len(phrases) * len(LANGUAGES)
         completed = 0
+
+        # Pre-check cache for all translations
+        cached_translations = self.get_cached_translations(phrases, [lang.lower() for lang in LANGUAGES])
 
         for phrase in phrases:
             self.translator.original_ready.emit(phrase, len(phrase))
 
-            for lang in LANGUAGES:
-                target_lang = lang.lower()
-                try:
-                    cached_translation = self.get_cached_translation(phrase, target_lang)
-                    if cached_translation:
-                        translation = cached_translation
-                        is_cached = True
+            # Process languages in parallel batches
+            for i in range(0, len(LANGUAGES), MAX_CONCURRENT):
+                batch_langs = LANGUAGES[i:i+MAX_CONCURRENT]
+                tasks = []
+
+                for lang in batch_langs:
+                    target_lang = lang.lower()
+                    key = (phrase, target_lang)
+
+                    if key in cached_translations:
+                        # Use cached translation
+                        translation = cached_translations[key]
+                        char_count = len(translation)
+                        self.translations_buffer.append((lang, translation, char_count))
+                        self.global_max_chars = max(self.global_max_chars, char_count)
+                        completed += 1
+                        self.progress_bar.setValue(int((completed / total) * 100))
                     else:
-                        translation = await self.translate_phrase(phrase, target_lang)
-                        self.store_translation(phrase, translation, target_lang)
-                        is_cached = False
+                        # Create task for non-cached translation
+                        tasks.append(self.translate_and_store(phrase, lang, target_lang, completed, total))
 
-                    char_count = len(translation)
-                    self.translations_buffer.append( (lang, translation, char_count) )
-                    self.global_max_chars = max(self.global_max_chars, char_count)
+                # Run non-cached translations concurrently
+                if tasks:
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    for result in results:
+                        if not isinstance(result, Exception):
+                            completed += 1
+                            self.progress_bar.setValue(int((completed / total) * 100))
 
-                    if not is_cached:
-                        self._rate_limit_multiplier = max(1, self._rate_limit_multiplier // 2)
-
-                except exceptions.TooManyRequests:
-                    self._rate_limit_multiplier *= 2
-                    delay = BASE_DELAY * self._rate_limit_multiplier
-                    await asyncio.sleep(delay)
-                except Exception as e:
-                    self.translator.translation_error.emit(lang, str(e))
-
-                completed += 1
-                self.progress_bar.setValue(int((completed / total) * 100))
-                await asyncio.sleep(BASE_DELAY * self._rate_limit_multiplier)
-
-        # Emit all translations after processing
+        # Display all translations after processing
         for lang, translation, char_count in self.translations_buffer:
             self.translator.translation_done.emit(lang, "", translation, char_count)
+
+        self.translator.loading_status.emit(False, "")
+
+    async def translate_and_store(self, phrase, lang, target_lang, completed, total):
+        try:
+            translation = await self.translate_phrase(phrase, target_lang)
+            self.store_translation(phrase, translation, target_lang)
+
+            char_count = len(translation)
+            self.translations_buffer.append((lang, translation, char_count))
+            self.global_max_chars = max(self.global_max_chars, char_count)
+
+            return completed + 1
+        except Exception as e:
+            self.translator.translation_error.emit(lang, str(e))
+            return Exception(str(e))
 
     async def translate_phrase(self, phrase, lang):
         services = [GoogleTranslator, MyMemoryTranslator]
