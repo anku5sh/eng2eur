@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QTextEdit, QProgressBar, QHBoxLayout
 )
 from PyQt6.QtCore import pyqtSignal, QObject, Qt
+from PyQt6.QtGui import QTextCursor
 from qasync import QEventLoop
 from deep_translator import GoogleTranslator, MyMemoryTranslator, exceptions
 
@@ -22,14 +23,23 @@ logging.basicConfig(
 
 VALID_CHARS_PATTERN = r'^[^\x00-\x1F\x7F]*$'
 LANGUAGES = [
-    'BG', 'CS', 'DA', 'DE', 'EL', 'ES', 'ET', 'FI', 'FR', 'HU',
-    'IT', 'LT', 'LV', 'NL', 'PL', 'PT', 'RO', 'SK', 'SL', 'SV'
+    'BG', 'CS', 'DA', 'DE', 'ES', 'ET', 'FI', 'FR', 'HR', 'HU',
+    'IT', 'JA', 'KO', 'LT', 'LV', 'NL', 'NO', 'PL', 'PT', 'RO',
+    'SK', 'SL', 'SV', 'UK'
 ]
+LANG_NAMES = {
+    'BG': 'Bulgarian', 'CS': 'Czech', 'DA': 'Danish', 'DE': 'German',
+    'ES': 'Spanish', 'ET': 'Estonian', 'FI': 'Finnish', 'FR': 'French',
+    'HR': 'Croatian', 'HU': 'Hungarian', 'IT': 'Italian', 'JA': 'Japanese',
+    'KO': 'Korean', 'LT': 'Lithuanian', 'LV': 'Latvian', 'NL': 'Dutch',
+    'NO': 'Norwegian', 'PL': 'Polish', 'PT': 'Portuguese', 'RO': 'Romanian',
+    'SK': 'Slovak', 'SL': 'Slovenian', 'SV': 'Swedish', 'UK': 'Ukrainian'
+}
 BASE_DELAY = 0.05
 MAX_LINE_LENGTH = 65
-WINDOW_WIDTH = 800
-WINDOW_HEIGHT = 600
-MAX_CONCURRENT = 5  # Maximum concurrent translations
+WINDOW_WIDTH = 900
+WINDOW_HEIGHT = 700
+MAX_CONCURRENT = 3
 
 def get_resource_path(relative_path):
     if getattr(sys, 'frozen', False):
@@ -42,7 +52,8 @@ class Translator(QObject):
     original_ready = pyqtSignal(str, int)
     translation_done = pyqtSignal(str, str, str, int)
     translation_error = pyqtSignal(str, str)
-    loading_status = pyqtSignal(bool, str)  # For loading indicator
+    loading_status = pyqtSignal(bool, str)
+    progress_update = pyqtSignal(int)
 
 class TranslationApp(QMainWindow):
     def __init__(self):
@@ -55,24 +66,13 @@ class TranslationApp(QMainWindow):
         self.global_max_chars = 0
         self.init_db()
         self.init_ui()
-        self.setFixedSize(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self.setMinimumSize(800, 600)
 
-        self.translator.original_ready.connect(
-            self.show_original,
-            Qt.ConnectionType.QueuedConnection
-        )
-        self.translator.translation_done.connect(
-            self.update_output,
-            Qt.ConnectionType.QueuedConnection
-        )
-        self.translator.translation_error.connect(
-            self.show_error,
-            Qt.ConnectionType.QueuedConnection
-        )
-        self.translator.loading_status.connect(
-            self.update_loading_status,
-            Qt.ConnectionType.QueuedConnection
-        )
+        self.translator.original_ready.connect(self.show_original)
+        self.translator.translation_done.connect(self.update_output)
+        self.translator.translation_error.connect(self.show_error)
+        self.translator.loading_status.connect(self.update_loading_status)
+        self.translator.progress_update.connect(self.progress_bar.setValue)
 
     def init_db(self):
         try:
@@ -132,7 +132,6 @@ class TranslationApp(QMainWindow):
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
 
-        # Loading indicator
         self.loading_label = QLabel("Loading, please wait...")
         self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.loading_label.setStyleSheet("font-weight: bold; color: blue;")
@@ -142,8 +141,8 @@ class TranslationApp(QMainWindow):
         self.output_area.setReadOnly(True)
         self.output_area.setFontFamily("Courier New")
         self.output_area.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
-        self.output_area.append(f"{'Lang':<5}{'Translation':<65}{'Chars':>6}")
-        self.output_area.append("-" * 90)
+        self.output_area.append(f"{'Language':<20}{'Translation':<65}{'Chars':>6}")
+        self.output_area.append("-" * 100)
 
         main_layout.addWidget(self.input_label)
         main_layout.addLayout(input_row)
@@ -174,9 +173,9 @@ class TranslationApp(QMainWindow):
             return
 
         self.input_field.clear()
-        self.output_area.clear()
-        self.output_area.append(f"{'Lang':<5}{'Translation':<65}{'Chars':>6}")
-        self.output_area.append("-" * 90)
+        self.output_area.append("\n" + "-" * 100)
+        self.output_area.append(f"{'Language':<20}{'Translation':<65}{'Chars':>6}")
+        self.output_area.append("-" * 100)
         self.progress_bar.setValue(0)
         self.translations_buffer = []
         self.global_max_chars = 0
@@ -190,13 +189,14 @@ class TranslationApp(QMainWindow):
         total = len(phrases) * len(LANGUAGES)
         completed = 0
 
-        # Pre-check cache for all translations
+        # Pre-check cache
         cached_translations = self.get_cached_translations(phrases, [lang.lower() for lang in LANGUAGES])
 
         for phrase in phrases:
             self.translator.original_ready.emit(phrase, len(phrase))
+            phrase_translations = []
 
-            # Process languages in parallel batches
+            # Process languages in batches
             for i in range(0, len(LANGUAGES), MAX_CONCURRENT):
                 batch_langs = LANGUAGES[i:i+MAX_CONCURRENT]
                 tasks = []
@@ -206,44 +206,47 @@ class TranslationApp(QMainWindow):
                     key = (phrase, target_lang)
 
                     if key in cached_translations:
-                        # Use cached translation
                         translation = cached_translations[key]
                         char_count = len(translation)
-                        self.translations_buffer.append((lang, translation, char_count))
+                        phrase_translations.append((lang, translation, char_count))
                         self.global_max_chars = max(self.global_max_chars, char_count)
                         completed += 1
-                        self.progress_bar.setValue(int((completed / total) * 100))
+                        self.translator.progress_update.emit(int((completed / total) * 100))
                     else:
-                        # Create task for non-cached translation
-                        tasks.append(self.translate_and_store(phrase, lang, target_lang, completed, total))
+                        tasks.append(self.translate_and_store(phrase, lang, target_lang))
 
-                # Run non-cached translations concurrently
                 if tasks:
                     results = await asyncio.gather(*tasks, return_exceptions=True)
                     for result in results:
-                        if not isinstance(result, Exception):
+                        if not isinstance(result, Exception) and result:
+                            lang, translation, char_count = result
+                            phrase_translations.append((lang, translation, char_count))
+                            self.global_max_chars = max(self.global_max_chars, char_count)
                             completed += 1
-                            self.progress_bar.setValue(int((completed / total) * 100))
+                            self.translator.progress_update.emit(int((completed / total) * 100))
 
-        # Display all translations after processing
-        for lang, translation, char_count in self.translations_buffer:
-            self.translator.translation_done.emit(lang, "", translation, char_count)
+                # Add small delay between batches
+                await asyncio.sleep(BASE_DELAY)
+
+            # Add translations to buffer
+            self.translations_buffer.extend(phrase_translations)
+
+            # Display translations for this phrase
+            for lang, translation, char_count in phrase_translations:
+                self.translator.translation_done.emit(lang, phrase, translation, char_count)
 
         self.translator.loading_status.emit(False, "")
 
-    async def translate_and_store(self, phrase, lang, target_lang, completed, total):
+    async def translate_and_store(self, phrase, lang, target_lang):
         try:
             translation = await self.translate_phrase(phrase, target_lang)
             self.store_translation(phrase, translation, target_lang)
 
             char_count = len(translation)
-            self.translations_buffer.append((lang, translation, char_count))
-            self.global_max_chars = max(self.global_max_chars, char_count)
-
-            return completed + 1
+            return (lang, translation, char_count)
         except Exception as e:
             self.translator.translation_error.emit(lang, str(e))
-            return Exception(str(e))
+            return None
 
     async def translate_phrase(self, phrase, lang):
         services = [GoogleTranslator, MyMemoryTranslator]
@@ -264,25 +267,39 @@ class TranslationApp(QMainWindow):
 
     def show_original(self, phrase, char_count):
         self.output_area.append(f"Original: {phrase} ({char_count} characters)\n")
+        # Scroll to the bottom
+        cursor = self.output_area.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.output_area.setTextCursor(cursor)
 
     def update_output(self, lang, original, translation, char_count):
+        lang_name = f"{lang} - {LANG_NAMES.get(lang, 'Unknown')}"
         translation_lines = [
             translation[i:i+MAX_LINE_LENGTH]
             for i in range(0, len(translation), MAX_LINE_LENGTH)
         ]
 
         for idx, line in enumerate(translation_lines):
-            lang_col = lang if idx == 0 else ""
+            lang_col = lang_name if idx == 0 else ""
             char_col = str(char_count) if idx == 0 else ""
 
             if char_count == self.global_max_chars and idx == 0:
                 char_col = f"[{char_col}]"
 
-            formatted_line = f"{lang_col:<5}{line:<65}{char_col:>6}"
+            formatted_line = f"{lang_col:<20}{line:<65}{char_col:>6}"
             self.output_area.append(formatted_line)
+
+        # Scroll to the bottom
+        cursor = self.output_area.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.output_area.setTextCursor(cursor)
 
     def show_error(self, context, message):
         self.output_area.append(f"\n[ERROR] {context}: {message}\n")
+        # Scroll to the bottom
+        cursor = self.output_area.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.output_area.setTextCursor(cursor)
 
 if __name__ == "__main__":
     try:
@@ -292,7 +309,7 @@ if __name__ == "__main__":
         window = TranslationApp()
         window.show()
         with loop:
-            sys.exit(loop.run_forever())
+            loop.run_forever()
     except Exception as e:
         logging.critical(f"Fatal error: {str(e)}", exc_info=True)
         sys.exit(1)

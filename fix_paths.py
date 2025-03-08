@@ -1,4 +1,3 @@
-# fix_paths.py - Required for macOS
 import sys
 import os
 
