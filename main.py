@@ -64,6 +64,7 @@ class TranslationApp(QMainWindow):
         self._rate_limit_multiplier = 1
         self.translations_buffer = []
         self.global_max_chars = 0
+        self.translation_history = []  # Store history of translations
         self.init_db()
         self.init_ui()
         self.setMinimumSize(800, 600)
@@ -141,6 +142,8 @@ class TranslationApp(QMainWindow):
         self.output_area.setReadOnly(True)
         self.output_area.setFontFamily("Courier New")
         self.output_area.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        self.output_area.append(f"{'Language':<20}{'Translation':<60}{'Chars':>10}")
+        self.output_area.append("-" * 100)
 
         main_layout.addWidget(self.input_label)
         main_layout.addLayout(input_row)
@@ -171,9 +174,15 @@ class TranslationApp(QMainWindow):
             return
 
         self.input_field.clear()
-        self.output_area.clear()
+
+        # Add separator between translations but don't clear previous ones
+        if self.translation_history:
+            self.output_area.append("\n\n" + "=" * 100 + "\n")
+
+        # Add header for this translation
         self.output_area.append(f"{'Language':<20}{'Translation':<60}{'Chars':>10}")
         self.output_area.append("-" * 100)
+
         self.progress_bar.setValue(0)
         self.translations_buffer = []
         self.global_max_chars = 0
@@ -233,6 +242,9 @@ class TranslationApp(QMainWindow):
             for lang, translation, char_count in phrase_translations:
                 self.translator.translation_done.emit(lang, phrase, translation, char_count)
 
+            # Add to history
+            self.translation_history.append((phrase, phrase_translations))
+
         self.translator.loading_status.emit(False, "")
 
     async def translate_and_store(self, phrase, lang, target_lang):
@@ -264,8 +276,20 @@ class TranslationApp(QMainWindow):
         raise exceptions.TranslationNotFound("Translation failed after 3 attempts")
 
     def show_original(self, phrase, char_count):
-        # Show original phrase and character count on the same line
-        self.output_area.append(f"Original: {phrase}{' ' * (60 - len(phrase))}       {char_count}")
+        # Split original phrase into lines if it's too long
+        original_lines = []
+        for i in range(0, len(phrase), MAX_LINE_LENGTH):
+            original_lines.append(phrase[i:i+MAX_LINE_LENGTH])
+
+        # Display the original phrase with proper wrapping
+        for idx, line in enumerate(original_lines):
+            if idx == 0:
+                self.output_area.append(f"Original: {line}")
+            else:
+                self.output_area.append(f"{'':10}{line}")
+
+        # Add character count on a separate line, aligned with the Chars column
+        self.output_area.append(f"{'':80}{char_count:>10}")
         self.output_area.append("")
 
         # Scroll to the bottom
