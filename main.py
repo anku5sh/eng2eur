@@ -35,11 +35,11 @@ LANG_NAMES = {
     'NO': 'Norwegian', 'PL': 'Polish', 'PT': 'Portuguese', 'RO': 'Romanian',
     'SK': 'Slovak', 'SL': 'Slovenian', 'SV': 'Swedish', 'UK': 'Ukrainian'
 }
-BASE_DELAY = 0.05
-MAX_LINE_LENGTH = 65
+BASE_DELAY = 0.01  # Reduced for faster translations
+MAX_LINE_LENGTH = 60  # Reduced to prevent overflow
 WINDOW_WIDTH = 900
 WINDOW_HEIGHT = 700
-MAX_CONCURRENT = 3
+MAX_CONCURRENT = 5  # Increased for faster translations
 
 def get_resource_path(relative_path):
     if getattr(sys, 'frozen', False):
@@ -141,8 +141,6 @@ class TranslationApp(QMainWindow):
         self.output_area.setReadOnly(True)
         self.output_area.setFontFamily("Courier New")
         self.output_area.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
-        self.output_area.append(f"{'Language':<20}{'Translation':<65}{'Chars':>6}")
-        self.output_area.append("-" * 100)
 
         main_layout.addWidget(self.input_label)
         main_layout.addLayout(input_row)
@@ -173,8 +171,8 @@ class TranslationApp(QMainWindow):
             return
 
         self.input_field.clear()
-        self.output_area.append("\n" + "-" * 100)
-        self.output_area.append(f"{'Language':<20}{'Translation':<65}{'Chars':>6}")
+        self.output_area.clear()  # Clear previous content
+        self.output_area.append(f"{'Language':<20}{'Translation':<60}{'Chars':>8}")
         self.output_area.append("-" * 100)
         self.progress_bar.setValue(0)
         self.translations_buffer = []
@@ -196,27 +194,27 @@ class TranslationApp(QMainWindow):
             self.translator.original_ready.emit(phrase, len(phrase))
             phrase_translations = []
 
-            # Process languages in batches
-            for i in range(0, len(LANGUAGES), MAX_CONCURRENT):
-                batch_langs = LANGUAGES[i:i+MAX_CONCURRENT]
-                tasks = []
+            # Process languages in parallel for speed
+            tasks = []
+            for lang in LANGUAGES:
+                target_lang = lang.lower()
+                key = (phrase, target_lang)
 
-                for lang in batch_langs:
-                    target_lang = lang.lower()
-                    key = (phrase, target_lang)
+                if key in cached_translations:
+                    translation = cached_translations[key]
+                    char_count = len(translation)
+                    phrase_translations.append((lang, translation, char_count))
+                    self.global_max_chars = max(self.global_max_chars, char_count)
+                    completed += 1
+                    self.translator.progress_update.emit(int((completed / total) * 100))
+                else:
+                    tasks.append(self.translate_and_store(phrase, lang, target_lang))
 
-                    if key in cached_translations:
-                        translation = cached_translations[key]
-                        char_count = len(translation)
-                        phrase_translations.append((lang, translation, char_count))
-                        self.global_max_chars = max(self.global_max_chars, char_count)
-                        completed += 1
-                        self.translator.progress_update.emit(int((completed / total) * 100))
-                    else:
-                        tasks.append(self.translate_and_store(phrase, lang, target_lang))
-
-                if tasks:
-                    results = await asyncio.gather(*tasks, return_exceptions=True)
+            # Execute translations in batches
+            for i in range(0, len(tasks), MAX_CONCURRENT):
+                batch = tasks[i:i+MAX_CONCURRENT]
+                if batch:
+                    results = await asyncio.gather(*batch, return_exceptions=True)
                     for result in results:
                         if not isinstance(result, Exception) and result:
                             lang, translation, char_count = result
@@ -225,11 +223,11 @@ class TranslationApp(QMainWindow):
                             completed += 1
                             self.translator.progress_update.emit(int((completed / total) * 100))
 
-                # Add small delay between batches
+                # Small delay between batches to prevent rate limiting
                 await asyncio.sleep(BASE_DELAY)
 
-            # Add translations to buffer
-            self.translations_buffer.extend(phrase_translations)
+            # Sort translations by language code for consistent display
+            phrase_translations.sort(key=lambda x: x[0])
 
             # Display translations for this phrase
             for lang, translation, char_count in phrase_translations:
@@ -266,7 +264,11 @@ class TranslationApp(QMainWindow):
         raise exceptions.TranslationNotFound("Translation failed after 3 attempts")
 
     def show_original(self, phrase, char_count):
-        self.output_area.append(f"Original: {phrase} ({char_count} characters)\n")
+        self.output_area.append(f"Original: {phrase}")
+        # Add original character count under the Chars column
+        self.output_area.append(f"{'':20}{'':60}{char_count:>8}")
+        self.output_area.append("")
+
         # Scroll to the bottom
         cursor = self.output_area.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
@@ -281,12 +283,13 @@ class TranslationApp(QMainWindow):
 
         for idx, line in enumerate(translation_lines):
             lang_col = lang_name if idx == 0 else ""
-            char_col = str(char_count) if idx == 0 else ""
+            # Only show character count on first line, right-aligned with fixed width
+            char_col = f"{char_count:>8}" if idx == 0 else ""
 
             if char_count == self.global_max_chars and idx == 0:
-                char_col = f"[{char_col}]"
+                char_col = f"[{char_count:>6}]"
 
-            formatted_line = f"{lang_col:<20}{line:<65}{char_col:>6}"
+            formatted_line = f"{lang_col:<20}{line:<60}{char_col}"
             self.output_area.append(formatted_line)
 
         # Scroll to the bottom
