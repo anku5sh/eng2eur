@@ -24,22 +24,22 @@ logging.basicConfig(
 VALID_CHARS_PATTERN = r'^[^\x00-\x1F\x7F]*$'
 LANGUAGES = [
     'BG', 'CS', 'DA', 'DE', 'ES', 'ET', 'FI', 'FR', 'HR', 'HU',
-    'IT', 'JA', 'KO', 'LT', 'LV', 'NL', 'NO', 'PL', 'PT', 'RO',
+    'IT', 'LT', 'LV', 'NL', 'NO', 'PL', 'PT', 'RO',
     'SK', 'SL', 'SV', 'UK'
 ]
 LANG_NAMES = {
     'BG': 'Bulgarian', 'CS': 'Czech', 'DA': 'Danish', 'DE': 'German',
     'ES': 'Spanish', 'ET': 'Estonian', 'FI': 'Finnish', 'FR': 'French',
-    'HR': 'Croatian', 'HU': 'Hungarian', 'IT': 'Italian', 'JA': 'Japanese',
-    'KO': 'Korean', 'LT': 'Lithuanian', 'LV': 'Latvian', 'NL': 'Dutch',
+    'HR': 'Croatian', 'HU': 'Hungarian', 'IT': 'Italian',
+    'LT': 'Lithuanian', 'LV': 'Latvian', 'NL': 'Dutch',
     'NO': 'Norwegian', 'PL': 'Polish', 'PT': 'Portuguese', 'RO': 'Romanian',
     'SK': 'Slovak', 'SL': 'Slovenian', 'SV': 'Swedish', 'UK': 'Ukrainian'
 }
-BASE_DELAY = 0.01  # Reduced for faster translations
-MAX_LINE_LENGTH = 60  # Reduced to prevent overflow
+BASE_DELAY = 0.01
+MAX_LINE_LENGTH = 60
 WINDOW_WIDTH = 900
 WINDOW_HEIGHT = 700
-MAX_CONCURRENT = 5  # Increased for faster translations
+MAX_CONCURRENT = 5
 
 def get_resource_path(relative_path):
     if getattr(sys, 'frozen', False):
@@ -171,8 +171,8 @@ class TranslationApp(QMainWindow):
             return
 
         self.input_field.clear()
-        self.output_area.clear()  # Clear previous content
-        self.output_area.append(f"{'Language':<20}{'Translation':<60}{'Chars':>8}")
+        self.output_area.clear()
+        self.output_area.append(f"{'Language':<20}{'Translation':<60}{'Chars':>10}")
         self.output_area.append("-" * 100)
         self.progress_bar.setValue(0)
         self.translations_buffer = []
@@ -265,8 +265,8 @@ class TranslationApp(QMainWindow):
 
     def show_original(self, phrase, char_count):
         self.output_area.append(f"Original: {phrase}")
-        # Add original character count under the Chars column
-        self.output_area.append(f"{'':20}{'':60}{char_count:>8}")
+        # Add original character count under the Chars column with fixed width
+        self.output_area.append(f"{'':20}{'':60}{char_count:>10}")
         self.output_area.append("")
 
         # Scroll to the bottom
@@ -284,10 +284,10 @@ class TranslationApp(QMainWindow):
         for idx, line in enumerate(translation_lines):
             lang_col = lang_name if idx == 0 else ""
             # Only show character count on first line, right-aligned with fixed width
-            char_col = f"{char_count:>8}" if idx == 0 else ""
+            char_col = f"{char_count:>10}" if idx == 0 else ""
 
             if char_count == self.global_max_chars and idx == 0:
-                char_col = f"[{char_count:>6}]"
+                char_col = f"[{char_count:>8}]"
 
             formatted_line = f"{lang_col:<20}{line:<60}{char_col}"
             self.output_area.append(formatted_line)
