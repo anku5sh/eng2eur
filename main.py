@@ -264,9 +264,8 @@ class TranslationApp(QMainWindow):
         raise exceptions.TranslationNotFound("Translation failed after 3 attempts")
 
     def show_original(self, phrase, char_count):
-        self.output_area.append(f"Original: {phrase}")
-        # Add original character count under the Chars column with fixed width
-        self.output_area.append(f"{'':20}{'':60}{char_count:>10}")
+        # Show original phrase and character count on the same line
+        self.output_area.append(f"Original: {phrase}{' ' * (60 - len(phrase))}       {char_count}")
         self.output_area.append("")
 
         # Scroll to the bottom
@@ -284,12 +283,12 @@ class TranslationApp(QMainWindow):
         for idx, line in enumerate(translation_lines):
             lang_col = lang_name if idx == 0 else ""
             # Only show character count on first line, right-aligned with fixed width
-            char_col = f"{char_count:>10}" if idx == 0 else ""
+            char_col = f"{char_count:>6}" if idx == 0 else ""
 
             if char_count == self.global_max_chars and idx == 0:
-                char_col = f"[{char_count:>8}]"
+                char_col = f"[{char_count}]"  # Remove extra spacing
 
-            formatted_line = f"{lang_col:<20}{line:<60}{char_col}"
+            formatted_line = f"{lang_col:<20}{line:<60}{char_col:>10}"
             self.output_area.append(formatted_line)
 
         # Scroll to the bottom
