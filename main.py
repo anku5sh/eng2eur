@@ -37,6 +37,9 @@ LANG_NAMES = {
 }
 BASE_DELAY = 0.01
 MAX_LINE_LENGTH = 60
+LANG_COL_WIDTH = 20
+TRANS_COL_WIDTH = 60
+CHARS_COL_WIDTH = 10
 WINDOW_WIDTH = 900
 WINDOW_HEIGHT = 700
 MAX_CONCURRENT = 5
@@ -47,6 +50,33 @@ def get_resource_path(relative_path):
     else:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
+
+def wrap_text(text, max_length):
+    """Wrap text at word boundaries, not breaking words"""
+    words = text.split()
+    lines = []
+    current_line = []
+    current_length = 0
+
+    for word in words:
+        # If adding this word would exceed the limit
+        if current_length + len(word) + (1 if current_length > 0 else 0) > max_length:
+            # Add the current line to lines and start a new line
+            if current_line:
+                lines.append(' '.join(current_line))
+            current_line = [word]
+            current_length = len(word)
+        else:
+            # Add the word to the current line
+            current_line.append(word)
+            # Add 1 for the space if not the first word
+            current_length += len(word) + (1 if current_length > 0 else 0)
+
+    # Add the last line
+    if current_line:
+        lines.append(' '.join(current_line))
+
+    return lines
 
 class Translator(QObject):
     original_ready = pyqtSignal(str, int)
@@ -65,6 +95,7 @@ class TranslationApp(QMainWindow):
         self.translations_buffer = []
         self.global_max_chars = 0
         self.translation_history = []  # Store history of translations
+        self.is_first_translation = True  # Flag for first translation
         self.init_db()
         self.init_ui()
         self.setMinimumSize(800, 600)
@@ -142,8 +173,11 @@ class TranslationApp(QMainWindow):
         self.output_area.setReadOnly(True)
         self.output_area.setFontFamily("Courier New")
         self.output_area.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
-        self.output_area.append(f"{'Language':<20}{'Translation':<60}{'Chars':>10}")
-        self.output_area.append("-" * 100)
+
+        # Only add header on initialization if it's the first run
+        header_format = f"{'Language':<{LANG_COL_WIDTH}}{'Translation':<{TRANS_COL_WIDTH}}{'Chars':>{CHARS_COL_WIDTH}}"
+        self.output_area.append(header_format)
+        self.output_area.append("-" * (LANG_COL_WIDTH + TRANS_COL_WIDTH + CHARS_COL_WIDTH))
 
         main_layout.addWidget(self.input_label)
         main_layout.addLayout(input_row)
@@ -176,12 +210,14 @@ class TranslationApp(QMainWindow):
         self.input_field.clear()
 
         # Add separator between translations but don't clear previous ones
-        if self.translation_history:
-            self.output_area.append("\n\n" + "=" * 100 + "\n")
-
-        # Add header for this translation
-        self.output_area.append(f"{'Language':<20}{'Translation':<60}{'Chars':>10}")
-        self.output_area.append("-" * 100)
+        if not self.is_first_translation:
+            self.output_area.append("\n\n" + "=" * (LANG_COL_WIDTH + TRANS_COL_WIDTH + CHARS_COL_WIDTH) + "\n")
+            header_format = f"{'Language':<{LANG_COL_WIDTH}}{'Translation':<{TRANS_COL_WIDTH}}{'Chars':>{CHARS_COL_WIDTH}}"
+            self.output_area.append(header_format)
+            self.output_area.append("-" * (LANG_COL_WIDTH + TRANS_COL_WIDTH + CHARS_COL_WIDTH))
+        else:
+            # First translation - don't add duplicate headers
+            self.is_first_translation = False
 
         self.progress_bar.setValue(0)
         self.translations_buffer = []
@@ -276,20 +312,26 @@ class TranslationApp(QMainWindow):
         raise exceptions.TranslationNotFound("Translation failed after 3 attempts")
 
     def show_original(self, phrase, char_count):
-        # Split original phrase into lines if it's too long
-        original_lines = []
-        for i in range(0, len(phrase), MAX_LINE_LENGTH):
-            original_lines.append(phrase[i:i+MAX_LINE_LENGTH])
+        # Wrap text at word boundaries
+        original_lines = wrap_text(phrase, MAX_LINE_LENGTH)
 
         # Display the original phrase with proper wrapping
-        for idx, line in enumerate(original_lines):
-            if idx == 0:
-                self.output_area.append(f"Original: {line}")
-            else:
-                self.output_area.append(f"{'':10}{line}")
+        if original_lines:
+            # First line with "Original:" prefix
+            first_line = original_lines[0]
+            # Calculate remaining space in translation column
+            remaining_space = TRANS_COL_WIDTH - len("Original: ") - len(first_line)
+            # Ensure we have at least 0 padding
+            padding = max(0, remaining_space)
 
-        # Add character count on a separate line, aligned with the Chars column
-        self.output_area.append(f"{'':80}{char_count:>10}")
+            # Format with exact column widths
+            formatted_line = f"{'Original:':<{LANG_COL_WIDTH}}{first_line}{' ' * padding}{char_count:>{CHARS_COL_WIDTH}}"
+            self.output_area.append(formatted_line)
+
+            # Additional lines if the phrase is long
+            for line in original_lines[1:]:
+                self.output_area.append(f"{'':<{LANG_COL_WIDTH}}{line}")
+
         self.output_area.append("")
 
         # Scroll to the bottom
@@ -299,20 +341,26 @@ class TranslationApp(QMainWindow):
 
     def update_output(self, lang, original, translation, char_count):
         lang_name = f"{lang} - {LANG_NAMES.get(lang, 'Unknown')}"
-        translation_lines = [
-            translation[i:i+MAX_LINE_LENGTH]
-            for i in range(0, len(translation), MAX_LINE_LENGTH)
-        ]
+        # Wrap translation at word boundaries
+        translation_lines = wrap_text(translation, MAX_LINE_LENGTH)
 
         for idx, line in enumerate(translation_lines):
             lang_col = lang_name if idx == 0 else ""
-            # Only show character count on first line, right-aligned with fixed width
-            char_col = f"{char_count:>6}" if idx == 0 else ""
 
-            if char_count == self.global_max_chars and idx == 0:
-                char_col = f"[{char_count}]"  # Remove extra spacing
+            # Only show character count on first line
+            if idx == 0:
+                if char_count == self.global_max_chars:
+                    # Format bracketed max count to align properly
+                    char_text = f"[{char_count}]"
+                    # Right align within column width
+                    char_col = f"{char_text:>{CHARS_COL_WIDTH}}"
+                else:
+                    char_col = f"{char_count:>{CHARS_COL_WIDTH}}"
+            else:
+                char_col = ""
 
-            formatted_line = f"{lang_col:<20}{line:<60}{char_col:>10}"
+            # Format with exact column widths
+            formatted_line = f"{lang_col:<{LANG_COL_WIDTH}}{line:<{TRANS_COL_WIDTH}}{char_col}"
             self.output_area.append(formatted_line)
 
         # Scroll to the bottom
