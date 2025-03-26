@@ -317,20 +317,14 @@ class TranslationApp(QMainWindow):
 
         # Display the original phrase with proper wrapping
         if original_lines:
-            # First line with "Original:" prefix
+            # Format first line with "Original:" and character count
             first_line = original_lines[0]
-            # Calculate remaining space in translation column
-            remaining_space = TRANS_COL_WIDTH - len("Original: ") - len(first_line)
-            # Ensure we have at least 0 padding
-            padding = max(0, remaining_space)
-
-            # Format with exact column widths
-            formatted_line = f"{'Original:':<{LANG_COL_WIDTH}}{first_line}{' ' * padding}{char_count:>{CHARS_COL_WIDTH}}"
-            self.output_area.append(formatted_line)
+            # Format with consistent column widths and proper alignment
+            self.output_area.append(f"{'Original:':<{LANG_COL_WIDTH}}{first_line:<{TRANS_COL_WIDTH}}{char_count:>{CHARS_COL_WIDTH}}")
 
             # Additional lines if the phrase is long
             for line in original_lines[1:]:
-                self.output_area.append(f"{'':<{LANG_COL_WIDTH}}{line}")
+                self.output_area.append(f"{'':<{LANG_COL_WIDTH}}{line:<{TRANS_COL_WIDTH}}")
 
         self.output_area.append("")
 
@@ -350,10 +344,10 @@ class TranslationApp(QMainWindow):
             # Only show character count on first line
             if idx == 0:
                 if char_count == self.global_max_chars:
-                    # Format bracketed max count to align properly
-                    char_text = f"[{char_count}]"
-                    # Right align within column width
-                    char_col = f"{char_text:>{CHARS_COL_WIDTH}}"
+                    # Handle max character count with brackets
+                    bracketed_count = f"[{char_count}]"
+                    # Right-align within the character column
+                    char_col = f"{bracketed_count:>{CHARS_COL_WIDTH}}"
                 else:
                     char_col = f"{char_count:>{CHARS_COL_WIDTH}}"
             else:
