@@ -78,6 +78,24 @@ def wrap_text(text, max_length):
 
     return lines
 
+def format_char_count(count, is_max=False):
+    """Format character count with proper alignment."""
+    # Get string representation
+    count_str = str(count)
+
+    if is_max:
+        # For max value with brackets:
+        # Calculate space needed for right alignment
+        # Count itself + left bracket, with 1 space reserved for right bracket
+        content = "[" + count_str
+        padding = CHARS_COL_WIDTH - len(content) - 1
+        return " " * padding + content + "]"
+    else:
+        # For regular values:
+        # Right-align with one space at the end
+        padding = CHARS_COL_WIDTH - len(count_str) - 1
+        return " " * padding + count_str + " "
+
 class Translator(QObject):
     original_ready = pyqtSignal(str, int)
     translation_done = pyqtSignal(str, str, str, int)
@@ -320,7 +338,8 @@ class TranslationApp(QMainWindow):
             # Format first line with "Original:" and character count
             first_line = original_lines[0]
             # Format with consistent column widths and proper alignment
-            self.output_area.append(f"{'Original:':<{LANG_COL_WIDTH}}{first_line:<{TRANS_COL_WIDTH}}{char_count:>{CHARS_COL_WIDTH}}")
+            formatted_count = format_char_count(char_count)
+            self.output_area.append(f"{'Original:':<{LANG_COL_WIDTH}}{first_line:<{TRANS_COL_WIDTH}}{formatted_count}")
 
             # Additional lines if the phrase is long
             for line in original_lines[1:]:
@@ -344,12 +363,11 @@ class TranslationApp(QMainWindow):
             # Only show character count on first line
             if idx == 0:
                 if char_count == self.global_max_chars:
-                    # Handle max character count with brackets
-                    bracketed_count = f"[{char_count}]"
-                    # Right-align within the character column
-                    char_col = f"{bracketed_count:>{CHARS_COL_WIDTH}}"
+                    # Format maximum count with brackets but align the digits
+                    char_col = format_char_count(char_count, is_max=True)
                 else:
-                    char_col = f"{char_count:>{CHARS_COL_WIDTH}}"
+                    # Regular right alignment for non-maximum counts
+                    char_col = format_char_count(char_count)
             else:
                 char_col = ""
 
